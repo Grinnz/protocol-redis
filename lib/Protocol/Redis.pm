@@ -43,24 +43,24 @@ my %message_type_encoders = (
 sub encode {
     my ($self, $message) = @_;
 
-    if (my $encoder = $message_type_encoders{$message->{type}}) {
+    if (my $encoder = $message_type_encoders{$message->[0]}) {
         $encoder->($self, $message);
     }
     else {
-        Carp::croak(qq/Unknown message type $message->{type}/);
+        Carp::croak(qq/Unknown message type $message->[0]/);
     }
 }
 
 sub _encode_string {
     my ($self, $message) = @_;
 
-    $message->{type} . $message->{data} . "\r\n";
+    $message->[0] . $message->[1] . "\r\n";
 }
 
 sub _encode_bulk {
     my ($self, $message) = @_;
 
-    my $data = $message->{data};
+    my $data = $message->[1];
 
     return '$-1' . "\r\n"
       unless defined $data;
@@ -71,7 +71,7 @@ sub _encode_bulk {
 sub _encode_multi_bulk {
     my ($self, $message) = @_;
 
-    my $data = $message->{data};
+    my $data = $message->[1];
 
     return '*-1' . "\r\n"
       unless defined $data;
@@ -98,7 +98,7 @@ sub parse {
     my ($self, $chunk) = @_;
 
     # Pass chunk to current vertex.
-    # Some vertices can return unparsed chunk. In this case 
+    # Some vertices can return unparsed chunk. In this case
     # cycle will pass chunk to next vertex.
     1 while $chunk = $self->{_state}->($self, $chunk);
 }
@@ -134,7 +134,7 @@ sub _state_parse_message_type {
 
     if ($cmd) {
         if (my $parser = $message_type_parsers{$cmd}) {
-            $self->{_cmd}{type} = $cmd;
+            $self->{_cmd}[0] = $cmd;
             $self->{_state} = $parser;
             return $chunk;
         }
@@ -146,7 +146,7 @@ sub _state_parse_message_type {
 sub _state_new_message {
     my ($self, $chunk) = @_;
 
-    $self->{_cmd} = {type => undef, data => undef};
+    $self->{_cmd} = [];
 
     $self->{_state_cb} = \&_message_parsed;
 
@@ -164,7 +164,7 @@ sub _state_string_message {
     return if $i < 0;
 
     # We got full string
-    $self->{_cmd}{data} = substr $str, 0, $i, '';
+    $self->{_cmd}[1] = substr $str, 0, $i, '';
 
     # Delete newline
     substr $str, 0, 2, '';
@@ -183,12 +183,12 @@ sub _state_bulk_message {
     $self->{_state_cb} = sub {
         my ($self, $chunk) = @_;
 
-        $self->{_bulk_size} = delete $self->{_cmd}{data};
+        $self->{_bulk_size} = delete $self->{_cmd}[1];
 
         if ($self->{_bulk_size} == -1) {
 
             # Nil
-            $self->{_cmd}{data} = undef;
+            $self->{_cmd}[1] = undef;
             $bulk_state_cb->($self, $chunk);
         }
         else {
@@ -209,7 +209,7 @@ sub _state_bulk_message_data {
     # String + newline parsed
     return unless length $str >= $self->{_bulk_size} + 2;
 
-    $self->{_cmd}{data} = substr $str, 0, $self->{_bulk_size}, '';
+    $self->{_cmd}[1] = substr $str, 0, $self->{_bulk_size}, '';
 
     # Delete ending newline
     substr $str, 0, 2, '';
@@ -232,10 +232,8 @@ sub _state_multibulk_message {
     $mbulk_process = sub {
         my ($self, $chunk) = @_;
 
-        push @$data,
-          { type => delete $self->{_cmd}{type},
-            data => delete $self->{_cmd}{data}
-          };
+        push @$data, $self->{_cmd};
+        $self->{_cmd} = [];
 
         if (scalar @$data == $arguments_num) {
 
@@ -244,8 +242,7 @@ sub _state_multibulk_message {
             delete $self->{_state_cb};
 
             # Return message
-            $self->{_cmd}{type} = '*';
-            $self->{_cmd}{data} = $data;
+            $self->{_cmd} = ['*' => $data];
             $mbulk_state_cb->($self, $chunk);
         }
         else {
@@ -261,10 +258,10 @@ sub _state_multibulk_message {
         my ($self, $chunk) = @_;
 
         # Number of Multi-Bulk message
-        $arguments_num = delete $self->{_cmd}{data};
+        $arguments_num = delete $self->{_cmd}[1];
         if ($arguments_num < 1) {
             $mbulk_process = undef;
-            $self->{_cmd}{data} = $arguments_num == 0 ? [] : undef;
+            $self->{_cmd}[1] = $arguments_num == 0 ? [] : undef;
             $mbulk_state_cb->($self, $chunk);
         }
         else {
